@@ -148,6 +148,7 @@ class TranscriptRecorder:
         assistant_text: str,
         reconnection_count: int = 0,
         recovery_turn: bool = False,
+        recovery_for_turn: Optional[int] = None,
     ):
         """Write the completed turn to the transcript file.
 
@@ -156,6 +157,7 @@ class TranscriptRecorder:
             assistant_text: The assistant's response text for this turn.
             reconnection_count: Number of reconnections during this turn (0 = no reconnection).
             recovery_turn: Whether this is a synthetic recovery turn.
+            recovery_for_turn: Scripted turn index this recovery corresponds to.
         """
         latency_ms = None
         if self.turn_start_monotonic is not None:
@@ -176,6 +178,8 @@ class TranscriptRecorder:
         }
         if recovery_turn:
             rec["recovery_turn"] = True
+            if recovery_for_turn is not None:
+                rec["recovery_for_turn"] = recovery_for_turn
         self.fp.write(json.dumps(rec, ensure_ascii=False) + "\n")
         self.fp.flush()
         self.total_turns_scored += 1

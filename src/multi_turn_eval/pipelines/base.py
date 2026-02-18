@@ -83,6 +83,10 @@ class BasePipeline(ABC):
             "MTE_TOOL_RESULT_RUN_LLM",
             self.default_tool_result_run_llm,
         )
+        # Recovery turn bookkeeping.
+        self._recovery_for_actual_turn: Optional[int] = None
+        self._recovery_turn_index_base: int = 0
+        self._recovery_turn_counter: int = 0
 
     @property
     def effective_turns(self) -> List[dict]:
@@ -116,6 +120,14 @@ class BasePipeline(ABC):
         logger.info(f"Recovery nudges enabled={self._enable_recovery_nudges}")
         logger.info(f"Tool call dedupe enabled={self._enable_tool_call_dedupe}")
         logger.info(f"Tool result run_llm enabled={self._tool_result_run_llm}")
+
+        # Keep synthetic recovery turns on unique transcript turn IDs.
+        if self.effective_turns:
+            max_actual_turn = self._get_actual_turn_index(len(self.effective_turns) - 1)
+            self._recovery_turn_index_base = max_actual_turn + 1
+        else:
+            self._recovery_turn_index_base = 0
+        self._recovery_turn_counter = 0
 
         # Create LLM service
         self.llm = self._create_llm(service_class, model)
@@ -276,16 +288,25 @@ class BasePipeline(ABC):
             f"tool_results={len(self.recorder.turn_results) if self.recorder else 'n/a'}"
         )
 
+        user_text = (
+            "Please go ahead."
+            if is_recovery_turn
+            else self.effective_turns[self.turn_idx].get("input", "")
+        )
+        recovery_for_turn = self._recovery_for_actual_turn if is_recovery_turn else None
+
         # Record turn (common)
         self.recorder.write_turn(
-            user_text=self.effective_turns[self.turn_idx].get("input", ""),
+            user_text=user_text,
             assistant_text=assistant_text,
             recovery_turn=is_recovery_turn,
+            recovery_for_turn=recovery_for_turn,
         )
 
         # Recovery attempt complete: always advance to next scripted turn.
         if is_recovery_turn:
             self._in_recovery_turn = False
+            self._recovery_for_actual_turn = None
             self.turn_idx += 1
 
             # Reset tool call tracking for the new turn
@@ -318,9 +339,14 @@ class BasePipeline(ABC):
             self._seen_tool_calls.clear()
             self._duplicate_tool_call_ids.clear()
 
-            # Re-start recorder state at the same actual turn index.
-            actual_turn_idx = self._get_actual_turn_index(self.turn_idx)
-            self.recorder.start_turn(actual_turn_idx)
+            # Re-start recorder state at a unique synthetic turn index to avoid
+            # duplicate "turn" IDs in transcript output.
+            self._recovery_for_actual_turn = self._get_actual_turn_index(self.turn_idx)
+            recovery_turn_idx = (
+                self._recovery_turn_index_base + self._recovery_turn_counter
+            )
+            self._recovery_turn_counter += 1
+            self.recorder.start_turn(recovery_turn_idx)
 
             await self._queue_recovery_turn()
             return
@@ -506,27 +532,58 @@ class BasePipeline(ABC):
     @classmethod
     def _args_semantically_match(cls, expected: Any, actual: Any) -> bool:
         """Recursive semantic equivalence for required tool args."""
+        return cls._args_semantically_match_with_key(expected, actual, key=None)
+
+    @classmethod
+    def _args_semantically_match_with_key(
+        cls,
+        expected: Any,
+        actual: Any,
+        *,
+        key: Optional[str],
+    ) -> bool:
+        """Recursive semantic equivalence for required tool args.
+
+        Identifier-like values (for keys such as *_id) are matched strictly.
+        """
         if isinstance(expected, dict):
             if not isinstance(actual, dict):
                 return False
-            for key, exp_val in expected.items():
-                if key not in actual:
+            for k, exp_val in expected.items():
+                if k not in actual:
                     return False
-                if not cls._args_semantically_match(exp_val, actual[key]):
+                child_key = str(k)
+                if not cls._args_semantically_match_with_key(
+                    exp_val, actual[k], key=child_key
+                ):
                     return False
             return True
 
         if isinstance(expected, list):
             if not isinstance(actual, list) or len(expected) != len(actual):
                 return False
-            return all(cls._args_semantically_match(e, a) for e, a in zip(expected, actual))
+            return all(
+                cls._args_semantically_match_with_key(e, a, key=key)
+                for e, a in zip(expected, actual)
+            )
 
         if isinstance(expected, str):
             if not isinstance(actual, str):
                 return False
+            if cls._is_identifier_key(key):
+                return expected.strip() == actual.strip()
             return cls._string_semantically_matches(expected, actual)
 
         return expected == actual
+
+    @staticmethod
+    def _is_identifier_key(key: Optional[str]) -> bool:
+        if not key:
+            return False
+        normalized = key.strip().lower()
+        if normalized in {"id", "session_id", "tool_call_id", "conversation_id"}:
+            return True
+        return normalized.endswith("_id")
 
     def _should_recover(self) -> bool:
         """Return True if we should inject a synthetic recovery turn."""
