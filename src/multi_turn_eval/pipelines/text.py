@@ -76,6 +76,9 @@ class NextTurn(FrameProcessor):
         self._active_turn_sig: tuple[int | None, float | None] | None = None
         self._finalized_turn_sig: tuple[int | None, float | None] | None = None
         self._saw_timestamp_this_turn = False
+        self._tool_only_finalize_task: asyncio.Task | None = None
+        # Give mixed text+tool turns a brief window for timestamp frames.
+        self._tool_only_finalize_grace_s = 0.25
 
     def _pending_tool_calls(self) -> int:
         """Return number of tool calls started but not yet recorded as results."""
@@ -117,9 +120,50 @@ class NextTurn(FrameProcessor):
     def _sync_turn_state(self) -> None:
         sig = self._current_turn_signature()
         if sig != self._active_turn_sig:
+            self._cancel_pending_task("_tool_wait_task")
+            self._cancel_pending_task("_tool_only_finalize_task")
+            self._awaiting_tool_completion = False
             self._active_turn_sig = sig
             self._finalized_turn_sig = None
             self._saw_timestamp_this_turn = False
+
+    def _cancel_pending_task(self, attr_name: str) -> None:
+        task = getattr(self, attr_name, None)
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        setattr(self, attr_name, None)
+
+    def _schedule_tool_only_finalize(self, reason: str) -> None:
+        if self._tool_only_finalize_task is not None:
+            return
+        turn_sig = self._current_turn_signature()
+        self._tool_only_finalize_task = asyncio.create_task(
+            self._wait_for_tool_only_finalize(turn_sig, reason)
+        )
+
+    async def _wait_for_tool_only_finalize(
+        self, turn_sig: tuple[int | None, float | None] | None, reason: str
+    ) -> None:
+        try:
+            await asyncio.sleep(self._tool_only_finalize_grace_s)
+            if self._saw_timestamp_this_turn:
+                return
+            if turn_sig is not None and self._current_turn_signature() != turn_sig:
+                return
+            if self._pending_tool_calls() > 0:
+                self._awaiting_tool_completion = True
+                if self._tool_wait_task is None:
+                    self._tool_wait_task = asyncio.create_task(
+                        self._wait_for_tool_completion()
+                    )
+                return
+            await self._finalize_turn(reason)
+        except asyncio.CancelledError:
+            return
+        finally:
+            self._tool_only_finalize_task = None
 
     async def _finalize_turn(self, reason: str) -> None:
         if self._ending_turn:
@@ -144,7 +188,13 @@ class NextTurn(FrameProcessor):
         try:
             while self._awaiting_tool_completion:
                 if self._pending_tool_calls() == 0:
-                    await self._finalize_turn("EOT deferred: tool calls complete")
+                    if self._saw_timestamp_this_turn:
+                        await self._finalize_turn("EOT deferred: tool calls complete")
+                    else:
+                        self._awaiting_tool_completion = False
+                        self._schedule_tool_only_finalize(
+                            "EOT (tool_result_complete signal)"
+                        )
                     return
                 if (time.monotonic() - start) >= timeout_s:
                     logger.warning(
@@ -167,6 +217,7 @@ class NextTurn(FrameProcessor):
         # Treat assistant timestamp frame as end-of-turn marker
         if isinstance(frame, LLMContextAssistantTimestampFrame):
             self._saw_timestamp_this_turn = True
+            self._cancel_pending_task("_tool_only_finalize_task")
             if self._pending_tool_calls() > 0:
                 # Defer turn completion until tool results are returned to the model.
                 self._awaiting_tool_completion = True
@@ -184,7 +235,11 @@ class NextTurn(FrameProcessor):
 
         # If we previously deferred EOT and tool results are now recorded, finish turn.
         if self._awaiting_tool_completion and self._pending_tool_calls() == 0:
-            await self._finalize_turn("EOT deferred: tool calls complete")
+            if self._saw_timestamp_this_turn:
+                await self._finalize_turn("EOT deferred: tool calls complete")
+            else:
+                self._awaiting_tool_completion = False
+                self._schedule_tool_only_finalize("EOT (tool_result_complete signal)")
 
         # Tool-only assistant turns can complete without an assistant timestamp
         # when run_llm is disabled on tool results. We emit and consume an
@@ -205,7 +260,7 @@ class NextTurn(FrameProcessor):
                 )
                 return
             if self._pending_tool_calls() == 0:
-                await self._finalize_turn("EOT (tool_result_complete signal)")
+                self._schedule_tool_only_finalize("EOT (tool_result_complete signal)")
             else:
                 self._awaiting_tool_completion = True
                 if self._tool_wait_task is None:

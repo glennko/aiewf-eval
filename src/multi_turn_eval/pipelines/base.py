@@ -441,6 +441,27 @@ class BasePipeline(ABC):
             elif isinstance(md, TTFBMetricsData):
                 self.recorder.record_ttfb(md.value)
 
+    def _tool_result_properties(self) -> Optional[FunctionCallResultProperties]:
+        """Return explicit tool-result properties only when overriding defaults.
+
+        `run_llm=False` is a behavioral override we need for text pipelines that
+        manage turn advancement explicitly. For `run_llm=True`, allow Pipecat's
+        default behavior (run only after the last in-progress tool call) by
+        returning `None`.
+        """
+        if self._tool_result_run_llm:
+            return None
+        return FunctionCallResultProperties(run_llm=False)
+
+    async def _emit_tool_result_callback(
+        self, params: FunctionCallParams, result: Dict[str, Any]
+    ) -> None:
+        properties = self._tool_result_properties()
+        if properties is None:
+            await params.result_callback(result)
+        else:
+            await params.result_callback(result, properties=properties)
+
     async def _function_catchall(self, params: FunctionCallParams) -> None:
         """Common function handler - returns success, handles end_session.
 
@@ -465,11 +486,8 @@ class BasePipeline(ABC):
                 if tool_call_id:
                     self._duplicate_tool_call_ids.add(tool_call_id)
                 # Return a result to satisfy the API, but mark it as skipped
-                await params.result_callback(
-                    {"status": "duplicate_skipped"},
-                    properties=FunctionCallResultProperties(
-                        run_llm=self._tool_result_run_llm
-                    ),
+                await self._emit_tool_result_callback(
+                    params, {"status": "duplicate_skipped"}
                 )
                 return
 
@@ -477,12 +495,7 @@ class BasePipeline(ABC):
         self._seen_tool_calls.add(call_key)
 
         result = {"status": "success"}
-        await params.result_callback(
-            result,
-            properties=FunctionCallResultProperties(
-                run_llm=self._tool_result_run_llm
-            ),
-        )
+        await self._emit_tool_result_callback(params, result)
 
         # end_session tool: gracefully terminate
         if params.function_name == "end_session":
