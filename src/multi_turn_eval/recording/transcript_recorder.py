@@ -76,7 +76,9 @@ class TranscriptRecorder:
     def record_ttfb(self, ttfb_seconds: float):
         """Record time to first byte for the current turn.
 
-        Only the first TTFB value per turn is recorded; subsequent calls are ignored.
+        Only the first meaningful TTFB value per turn is recorded. If a spurious
+        0ms sample arrives before the real measurement, keep the first positive
+        value.
 
         Args:
             ttfb_seconds: Time to first byte in seconds.
@@ -89,6 +91,12 @@ class TranscriptRecorder:
         if self.turn_ttfb_ms is None:
             self.turn_ttfb_ms = ttfb_ms
             logger.debug(f"TranscriptRecorder: set turn_ttfb_ms = {ttfb_ms}")
+        elif self.turn_ttfb_ms == 0 and ttfb_ms > 0:
+            self.turn_ttfb_ms = ttfb_ms
+            logger.debug(
+                "TranscriptRecorder: replaced initial 0ms TTFB with first "
+                f"positive sample {ttfb_ms}ms"
+            )
         else:
             logger.debug(f"TranscriptRecorder: IGNORING - already set to {self.turn_ttfb_ms}")
 

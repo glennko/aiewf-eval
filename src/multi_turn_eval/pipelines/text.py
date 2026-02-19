@@ -11,6 +11,7 @@ Pipeline: UserAggregator → LLM → ToolCallRecorder → AssistantAggregator �
 """
 
 import asyncio
+import os
 import time
 
 from loguru import logger
@@ -30,6 +31,24 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from multi_turn_eval.pipelines.base import BasePipeline
 from multi_turn_eval.frames import ToolResultTurnCompleteFrame
 from multi_turn_eval.processors.tool_call_recorder import ToolCallRecorder
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning(f"Invalid float for {name}: {value!r}; using {default}")
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class NextTurn(FrameProcessor):
@@ -330,9 +349,20 @@ class TextPipeline(BasePipeline):
             ]
         )
 
+        idle_timeout_secs = _env_float("MTE_TEXT_IDLE_TIMEOUT_SECS", 45.0)
+        if "MTE_TEXT_IDLE_TIMEOUT_SECS" not in os.environ:
+            # Non-streaming OpenAI-compatible endpoints can take >45s to return
+            # the first completion chunk for large contexts. Auto-extend for
+            # nemotron non-stream mode unless explicitly overridden.
+            if (self.service_name or "").lower() == "nemotron" and _env_bool(
+                "MTE_NEMOTRON_NON_STREAMING", False
+            ):
+                idle_timeout_secs = 180.0
+        logger.info(f"Text pipeline idle_timeout_secs={idle_timeout_secs}")
+
         self.task = PipelineTask(
             pipeline,
-            idle_timeout_secs=45,
+            idle_timeout_secs=idle_timeout_secs,
             idle_timeout_frames=(MetricsFrame,),
             params=PipelineParams(
                 enable_metrics=True,
@@ -343,6 +373,7 @@ class TextPipeline(BasePipeline):
     async def _queue_first_turn(self) -> None:
         """Queue LLMRunFrame to start the first turn."""
         # The first user message is already in context from _setup_context
+        self._sanitize_openai_context_tool_ids()
         logger.debug(
             "queue_turn: reason=first "
             f"turn_idx={self.turn_idx} "
@@ -354,6 +385,7 @@ class TextPipeline(BasePipeline):
         """Add next user message to context and trigger LLM."""
         turn = self._get_current_turn()
         self.context.add_messages([{"role": "user", "content": turn["input"]}])
+        self._sanitize_openai_context_tool_ids()
         self.last_msg_idx = len(self.context.get_messages())
         logger.debug(
             "queue_turn: reason=next "
@@ -366,6 +398,7 @@ class TextPipeline(BasePipeline):
     async def _queue_recovery_turn(self) -> None:
         """Queue a synthetic user nudge to recover a missed required tool call."""
         self.context.add_messages([{"role": "user", "content": "Please go ahead."}])
+        self._sanitize_openai_context_tool_ids()
         self.last_msg_idx = len(self.context.get_messages())
         logger.debug(
             "queue_turn: reason=recovery "

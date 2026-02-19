@@ -7,7 +7,9 @@ Each pipeline type (text, realtime, nova-sonic) handles its own specifics.
 import asyncio
 import os
 import re
+import uuid
 from abc import ABC, abstractmethod
+from collections import deque
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
@@ -155,6 +157,67 @@ class BasePipeline(ABC):
         """Get the current turn data."""
         return self.effective_turns[self.turn_idx]
 
+    def _sanitize_openai_context_tool_ids(self) -> None:
+        """Normalize missing tool-call IDs for OpenAI-compatible services.
+
+        Some custom OpenAI-compatible endpoints can emit tool calls/results
+        with null IDs. The official OpenAI client validates these IDs as
+        required strings when re-sending context on the next turn.
+        """
+        service_name = (self.service_name or "").lower()
+        if service_name not in {"openai", "openrouter", "nemotron"}:
+            return
+        if self.context is None:
+            return
+
+        messages = self.context.get_messages()
+        if not messages:
+            return
+
+        pending_tool_call_ids: deque[str] = deque()
+        patched = 0
+
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+
+            if role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    tool_call_id = tool_call.get("id")
+                    if not isinstance(tool_call_id, str) or not tool_call_id.strip():
+                        tool_call_id = f"call_{uuid.uuid4().hex[:24]}"
+                        tool_call["id"] = tool_call_id
+                        patched += 1
+                    pending_tool_call_ids.append(tool_call_id)
+                continue
+
+            if role == "tool":
+                tool_call_id = msg.get("tool_call_id")
+                if not isinstance(tool_call_id, str) or not tool_call_id.strip():
+                    if pending_tool_call_ids:
+                        msg["tool_call_id"] = pending_tool_call_ids.popleft()
+                    else:
+                        msg["tool_call_id"] = f"call_{uuid.uuid4().hex[:24]}"
+                    patched += 1
+                    continue
+
+                # Keep our pending queue aligned when IDs already exist.
+                if pending_tool_call_ids and pending_tool_call_ids[0] == tool_call_id:
+                    pending_tool_call_ids.popleft()
+                elif tool_call_id in pending_tool_call_ids:
+                    pending_tool_call_ids.remove(tool_call_id)
+
+        if patched:
+            logger.warning(
+                f"Patched {patched} missing OpenAI tool-call IDs in context"
+            )
+
     def _create_llm(
         self, service_class: Optional[type], model: str
     ) -> FrameProcessor:
@@ -212,7 +275,7 @@ class BasePipeline(ABC):
             if not api_key:
                 raise EnvironmentError("CEREBRAS_API_KEY environment variable is required")
             kwargs["api_key"] = api_key
-        elif "OpenAI" in class_name:
+        elif "OpenAI" in class_name or service_name_lower == "nemotron":
             api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise EnvironmentError("OPENAI_API_KEY environment variable is required")
