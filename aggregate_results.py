@@ -8,7 +8,8 @@ This script:
 4. Groups runs by model and selects the 5 most recent for each
 5. Aggregates scores (tool_use, instruction_following, kb_grounding) across runs
 6. Loads TTFB values from transcript.jsonl for latency statistics
-7. Calculates aggregate pass rate: (tool + IF + KB) / (total_turns * 3) * 100
+7. Calculates aggregate strict turn pass rate:
+   turns where tool_use_correct && instruction_following && kb_grounding
 8. Calculates median pass rate across individual runs (shows typical performance,
    less affected by outlier runs with model instability or duplicate tool calls)
 9. Computes TTFB median, P95, and max across all turns
@@ -43,6 +44,7 @@ MODEL_MAPPINGS = {
     "gemini-2.5-flash-native-audio-preview-09-2025": "gemini-native-audio-09",
     "gpt-realtime": "gpt-realtime",
     "amazon.nova-2-sonic-v1_0": "nova-sonic",
+    "us.amazon.nova-2-pro-preview-20251202-v1_0": "nova-2-pro-preview",
 }
 
 
@@ -51,6 +53,15 @@ def get_model_from_dir(dir_name: str) -> str | None:
     parts = dir_name.split("_", 1)
     if len(parts) == 2:
         model_part = parts[1]
+        # Current run directories append an 8-char unique suffix.
+        # Strip it so model matching stays stable.
+        model_parts = model_part.rsplit("_", 1)
+        if (
+            len(model_parts) == 2
+            and len(model_parts[1]) == 8
+            and all(c in "0123456789abcdef" for c in model_parts[1].lower())
+        ):
+            model_part = model_parts[0]
         # EXACT matches only - no prefix matching
         if model_part in MODEL_MAPPINGS:
             return model_part
@@ -80,6 +91,34 @@ def load_transcript_ttfb(run_dir: Path) -> list[float]:
                 except json.JSONDecodeError:
                     continue
     return ttfb_values
+
+
+def load_turn_pass_from_judged(run_dir: Path) -> tuple[int, int]:
+    """Count strict per-turn passes from claude_judged.jsonl."""
+    judged_file = run_dir / "claude_judged.jsonl"
+    if not judged_file.exists():
+        return 0, 0
+
+    passed = 0
+    total = 0
+    with judged_file.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            scores = rec.get("scores")
+            if not isinstance(scores, dict):
+                continue
+            total += 1
+            if (
+                scores.get("tool_use_correct", False)
+                and scores.get("instruction_following", False)
+                and scores.get("kb_grounding", False)
+            ):
+                passed += 1
+
+    return passed, total
 
 
 def main():
@@ -127,6 +166,8 @@ def main():
         "tool_use": [],
         "instruction_following": [],
         "kb_grounding": [],
+        "turn_pass": [],
+        "turn_totals": [],
         "ttfb_values": [],
         "run_dirs": [],
         "per_run_stats": [],  # Individual run statistics
@@ -139,14 +180,29 @@ def main():
         recent_runs = runs_sorted[-args.runs:]  # Take the N most recent
 
         for run in recent_runs:
-            passes = run["summary"].get("claude_passes", {})
+            summary = run["summary"]
+            passes = summary.get("claude_passes", {})
+            turns_scored = int(summary.get("turns_scored", 0) or 0)
             tool = passes.get("tool_use_correct", 0)
             instr = passes.get("instruction_following", 0)
             kb = passes.get("kb_grounding", 0)
+            turn_pass_count = 0
+            turn_pass_total = 0
+            turn_pass = summary.get("turn_pass")
+            if isinstance(turn_pass, dict):
+                turn_pass_count = int(turn_pass.get("count", 0) or 0)
+                turn_pass_total = int(turn_pass.get("total", 0) or 0)
+            if turn_pass_total <= 0:
+                turn_pass_count, turn_pass_total = load_turn_pass_from_judged(run["dir"])
+            if turn_pass_total <= 0 and turns_scored > 0:
+                turn_pass_total = turns_scored
+                turn_pass_count = min(tool, instr, kb)
 
             results[model]["tool_use"].append(tool)
             results[model]["instruction_following"].append(instr)
             results[model]["kb_grounding"].append(kb)
+            results[model]["turn_pass"].append(turn_pass_count)
+            results[model]["turn_totals"].append(turn_pass_total)
             results[model]["run_dirs"].append(run["name"])
 
             # Load TTFB values
@@ -160,10 +216,10 @@ def main():
                 "tool_use_correct": tool,
                 "instruction_following": instr,
                 "kb_grounding": kb,
-                "total": tool + instr + kb,
-                "pass_rate": (tool + instr + kb) / 90 * 100,  # 30 turns * 3 dimensions
+                "turn_pass": turn_pass_count,
+                "turns": turn_pass_total,
+                "pass_rate": (turn_pass_count / turn_pass_total * 100) if turn_pass_total > 0 else 0,
                 "ttfb_median_ms": round(ttfb_med, 1),
-                "turns": 30,
             })
 
     # Calculate aggregated metrics
@@ -183,13 +239,14 @@ def main():
             continue
 
         n_runs = len(data["tool_use"])
-        total_turns = n_runs * 30  # 30 turns per run
+        total_turns = sum(data["turn_totals"])
 
         tool_sum = sum(data["tool_use"])
         if_sum = sum(data["instruction_following"])
         kb_sum = sum(data["kb_grounding"])
+        turn_pass_sum = sum(data["turn_pass"])
 
-        pass_rate = (tool_sum + if_sum + kb_sum) / (total_turns * 3) * 100
+        pass_rate = (turn_pass_sum / total_turns * 100) if total_turns > 0 else 0
 
         # Median pass rate across individual runs (shows typical performance)
         per_run_pass_rates = [s["pass_rate"] for s in data["per_run_stats"]]
@@ -207,6 +264,7 @@ def main():
 
         aggregated.append({
             "model": model,
+            "turn_pass": f"{turn_pass_sum}/{total_turns}",
             "tool_use": f"{tool_sum}/{total_turns}",
             "instruction_following": f"{if_sum}/{total_turns}",
             "kb_grounding": f"{kb_sum}/{total_turns}",
@@ -220,6 +278,7 @@ def main():
         # Store in metadata
         metadata["models"][model] = {
             "aggregate": {
+                "turn_pass": turn_pass_sum,
                 "tool_use_correct": tool_sum,
                 "instruction_following": if_sum,
                 "kb_grounding": kb_sum,
@@ -237,11 +296,12 @@ def main():
     aggregated.sort(key=lambda x: x["pass_rate"], reverse=True)
 
     # Output table (without Run Directory column)
-    print("  | Model                | Tool Use  | Instruction | KB Ground | Aggr Rate | Median Rate | TTFB Med | TTFB P95 | TTFB Max |")
-    print("  |----------------------|-----------|-------------|-----------|-----------|-------------|----------|----------|----------|")
+    print("  | Model                | Turn Pass | Tool Use  | Instruction | KB Ground | Aggr Rate | Median Rate | TTFB Med | TTFB P95 | TTFB Max |")
+    print("  |----------------------|-----------|-----------|-------------|-----------|-----------|-------------|----------|----------|----------|")
 
     for row in aggregated:
         model = row["model"]
+        turn_pass = row["turn_pass"]
         tool = row["tool_use"]
         instr = row["instruction_following"]
         kb = row["kb_grounding"]
@@ -251,7 +311,7 @@ def main():
         ttfb_p95 = f"{int(row['ttfb_p95'])}ms"
         ttfb_max = f"{int(row['ttfb_max'])}ms"
 
-        print(f"  | {model:<20} | {tool:<9} | {instr:<11} | {kb:<9} | {pass_rate:<9} | {median_rate:<11} | {ttfb_med:<8} | {ttfb_p95:<8} | {ttfb_max:<8} |")
+        print(f"  | {model:<20} | {turn_pass:<9} | {tool:<9} | {instr:<11} | {kb:<9} | {pass_rate:<9} | {median_rate:<11} | {ttfb_med:<8} | {ttfb_p95:<8} | {ttfb_max:<8} |")
 
     # Save metadata to timestamped file
     output_file = OUTPUT_DIR / f"analysis_{run_timestamp}.json"

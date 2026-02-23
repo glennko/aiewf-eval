@@ -557,6 +557,15 @@ def write_outputs(
             1 for j in judgments.values() if j["scores"]["kb_grounding"]
         ),
     }
+    turns_scored = len(judgments)
+    turn_pass_count = sum(
+        1
+        for j in judgments.values()
+        if j["scores"]["tool_use_correct"]
+        and j["scores"]["instruction_following"]
+        and j["scores"]["kb_grounding"]
+    )
+    turn_pass_rate = (turn_pass_count / turns_scored * 100) if turns_scored > 0 else 0.0
 
     # Count turns with turn-taking failures that also failed instruction_following
     # (these may be excusable)
@@ -568,7 +577,12 @@ def write_outputs(
     summary_data = {
         "model_name": model_name,
         "claude_passes": passes,
-        "turns_scored": len(judgments),
+        "turns_scored": turns_scored,
+        "turn_pass": {
+            "count": turn_pass_count,
+            "total": turns_scored,
+            "rate": round(turn_pass_rate, 4),
+        },
         "recovery_turns_recorded": len(recovery_records),
         "judge_version": JUDGE_VERSION,
         "judge_model": JUDGE_MODEL,
@@ -597,6 +611,7 @@ def write_outputs(
         f"",
         f"## Summary Metrics",
         f"",
+        f"- **Turn Pass (strict)**: {turn_pass_count}/{total} ({turn_pass_rate:.1f}%)",
         f"- **Turn-Taking**: {passes['turn_taking']}/{total} ({passes['turn_taking']/total*100:.1f}%)",
         f"- **Tool Use Correct**: {passes['tool_use_correct']}/{total} ({passes['tool_use_correct']/total*100:.1f}%)",
         f"- **Instruction Following**: {passes['instruction_following']}/{total} ({passes['instruction_following']/total*100:.1f}%)",

@@ -73,6 +73,34 @@ def load_ttfb_from_transcript(run_dir: Path) -> list[float]:
     return ttfb_values
 
 
+def load_turn_pass_from_judged(run_dir: Path) -> tuple[int, int]:
+    """Count strict per-turn passes from claude_judged.jsonl."""
+    judged_path = run_dir / "claude_judged.jsonl"
+    if not judged_path.exists():
+        return 0, 0
+
+    passed = 0
+    total = 0
+    with judged_path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            scores = rec.get("scores")
+            if not isinstance(scores, dict):
+                continue
+            total += 1
+            if (
+                scores.get("tool_use_correct", False)
+                and scores.get("instruction_following", False)
+                and scores.get("kb_grounding", False)
+            ):
+                passed += 1
+
+    return passed, total
+
+
 def find_run_directories(args) -> list[Path]:
     """Find run directories based on search criteria."""
     if args.pattern:
@@ -119,7 +147,7 @@ def find_run_directories(args) -> list[Path]:
 
 def aggregate_results(run_dirs: list[Path], model: str) -> dict:
     """Aggregate results from multiple runs."""
-    all_summaries = []
+    run_entries = []
     all_ttfb = []
     skipped = []
 
@@ -131,52 +159,82 @@ def aggregate_results(run_dirs: list[Path], model: str) -> dict:
             skipped.append(run_dir)
             continue
 
-        all_summaries.append(summary)
+        turns_scored = summary.get("turns_scored", 0)
+        passes = summary.get("claude_passes", {})
+
+        # Prefer strict turn-pass from summary, then judged file, then fallback.
+        turn_pass_count = 0
+        turn_pass_total = 0
+        turn_pass = summary.get("turn_pass")
+        if isinstance(turn_pass, dict):
+            turn_pass_count = int(turn_pass.get("count", 0) or 0)
+            turn_pass_total = int(turn_pass.get("total", 0) or 0)
+
+        if turn_pass_total <= 0:
+            turn_pass_count, turn_pass_total = load_turn_pass_from_judged(run_dir)
+
+        if turn_pass_total <= 0 and turns_scored > 0:
+            turn_pass_total = turns_scored
+            turn_pass_count = min(
+                passes.get("tool_use_correct", 0),
+                passes.get("instruction_following", 0),
+                passes.get("kb_grounding", 0),
+            )
+
+        run_entries.append(
+            {
+                "summary": summary,
+                "turns_scored": turns_scored,
+                "passes": passes,
+                "turn_pass_count": turn_pass_count,
+                "turn_pass_total": turn_pass_total,
+            }
+        )
 
         # Extract TTFB from transcript
         ttfb_values = load_ttfb_from_transcript(run_dir)
         all_ttfb.extend(ttfb_values)
 
     # Check if we have any valid summaries
-    if not all_summaries:
+    if not run_entries:
         raise ValueError(
             "No valid run summaries found. All runs may have failed or not been judged yet."
         )
 
     # Calculate total turns across all runs
-    total_turns = sum(s.get("turns_scored", 0) for s in all_summaries)
+    total_turns = sum(e["turns_scored"] for e in run_entries)
 
     # Aggregate pass counts
     tool_use_total = sum(
-        s.get("claude_passes", {}).get("tool_use_correct", 0) for s in all_summaries
+        e["passes"].get("tool_use_correct", 0) for e in run_entries
     )
     instruction_total = sum(
-        s.get("claude_passes", {}).get("instruction_following", 0)
-        for s in all_summaries
+        e["passes"].get("instruction_following", 0) for e in run_entries
     )
     kb_grounding_total = sum(
-        s.get("claude_passes", {}).get("kb_grounding", 0) for s in all_summaries
+        e["passes"].get("kb_grounding", 0) for e in run_entries
     )
+    turn_pass_total = sum(e["turn_pass_count"] for e in run_entries)
+    turn_pass_denominator = sum(e["turn_pass_total"] for e in run_entries)
 
-    # Calculate pass rates (percentage of total turns)
+    # Calculate rates
     tool_use_rate = (tool_use_total / total_turns * 100) if total_turns > 0 else 0
     instruction_rate = (instruction_total / total_turns * 100) if total_turns > 0 else 0
     kb_grounding_rate = (
         (kb_grounding_total / total_turns * 100) if total_turns > 0 else 0
     )
-    overall_pass_rate = (tool_use_rate + instruction_rate + kb_grounding_rate) / 3
+    overall_pass_rate = (
+        (turn_pass_total / turn_pass_denominator * 100)
+        if turn_pass_denominator > 0
+        else 0
+    )
 
-    # Calculate median rate (median of individual run pass rates)
+    # Median of per-run strict turn pass rates
     run_pass_rates = []
-    for summary in all_summaries:
-        turns = summary.get("turns_scored", 0)
+    for entry in run_entries:
+        turns = entry["turn_pass_total"]
         if turns > 0:
-            passes = summary.get("claude_passes", {})
-            tool_use = passes.get("tool_use_correct", 0)
-            instruction = passes.get("instruction_following", 0)
-            kb = passes.get("kb_grounding", 0)
-            run_rate = ((tool_use + instruction + kb) / (turns * 3)) * 100
-            run_pass_rates.append(run_rate)
+            run_pass_rates.append(entry["turn_pass_count"] / turns * 100)
 
     median_rate = statistics.median(run_pass_rates) if run_pass_rates else 0
 
@@ -190,9 +248,14 @@ def aggregate_results(run_dirs: list[Path], model: str) -> dict:
     return {
         "model": model,
         "total_turns": total_turns,
-        "num_runs": len(all_summaries),
+        "num_runs": len(run_entries),
         "num_skipped": len(skipped),
         "skipped_runs": [str(d) for d in skipped],
+        "turn_pass": {
+            "count": turn_pass_total,
+            "total": turn_pass_denominator,
+            "rate": overall_pass_rate,
+        },
         "tool_use": {
             "count": tool_use_total,
             "total": total_turns,
@@ -241,14 +304,15 @@ def print_results_table(results: dict):
 
     # Header
     print(
-        "| Model                         | Tool Use  | Instruction | KB Ground | Pass Rate | Median Rate | TTFB Med | TTFB P95 | TTFB Max |"
+        "| Model                         | Turn Pass | Tool Use  | Instruction | KB Ground | Pass Rate | Median Rate | TTFB Med | TTFB P95 | TTFB Max |"
     )
     print(
-        "|-------------------------------|-----------|-------------|-----------|-----------|-------------|----------|----------|----------|"
+        "|-------------------------------|-----------|-----------|-------------|-----------|-----------|-------------|----------|----------|----------|"
     )
 
     # Data row
     model_name = r["model"][:29].ljust(29)
+    turn_pass = f"{r['turn_pass']['count']}/{r['turn_pass']['total']}".ljust(9)
     tool_use = f"{r['tool_use']['count']}/{r['total_turns']}".ljust(9)
     instruction = f"{r['instruction']['count']}/{r['total_turns']}".ljust(11)
     kb_grounding = f"{r['kb_grounding']['count']}/{r['total_turns']}".ljust(9)
@@ -259,12 +323,15 @@ def print_results_table(results: dict):
     ttfb_max = format_ms(r["ttfb_max"]).ljust(8)
 
     print(
-        f"| {model_name} | {tool_use} | {instruction} | {kb_grounding} | {pass_rate} | {median_rate} | {ttfb_med} | {ttfb_p95} | {ttfb_max} |"
+        f"| {model_name} | {turn_pass} | {tool_use} | {instruction} | {kb_grounding} | {pass_rate} | {median_rate} | {ttfb_med} | {ttfb_p95} | {ttfb_max} |"
     )
     print()
 
     # Individual metrics
     print("Detailed Breakdown:")
+    print(
+        f"  Turn Pass (strict):    {r['turn_pass']['count']}/{r['turn_pass']['total']} ({r['turn_pass']['rate']:.1f}%)"
+    )
     print(
         f"  Tool Use:              {r['tool_use']['count']}/{r['total_turns']} ({r['tool_use']['rate']:.1f}%)"
     )

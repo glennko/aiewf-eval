@@ -340,8 +340,17 @@ def judge(
     summary = json.loads(summary_path.read_text())
     passes = summary.get("claude_passes", {})
     total = summary.get("turns_scored", 0)
+    turn_pass = summary.get("turn_pass", {})
+    turn_pass_count = turn_pass.get("count")
+    if turn_pass_count is None:
+        turn_pass_count = min(
+            passes.get("tool_use_correct", 0),
+            passes.get("instruction_following", 0),
+            passes.get("kb_grounding", 0),
+        )
 
     click.echo(f"Judged {total} turns (with turn-taking analysis)")
+    click.echo(f"  Turn pass (strict): {turn_pass_count}/{total}")
     click.echo(f"  Turn-taking: {passes.get('turn_taking', total)}/{total}")
     click.echo(f"  Tool use: {passes.get('tool_use_correct', 0)}/{total}")
     click.echo(f"  Instruction following: {passes.get('instruction_following', 0)}/{total}")

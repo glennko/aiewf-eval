@@ -11,29 +11,24 @@ The two benchmarks here in this public repo are:
 
 Text mode models:
 
-| Model                     | Tool Use  | Instruction | KB Ground | Pass Rate | Median Rate | TTFB Med | TTFB P95 | TTFB Max |
-|---------------------------|-----------|-------------|-----------|-----------|-------------|----------|----------|----------|
-| gpt-5.1                   | 294/300   | 294/300     | 300/300   | 98.7%     | 100.0%      |  738ms   | 1446ms   | 4244ms   |
-| gemini-3-flash-preview    | 300/300   | 300/300     | 300/300   | 100.0%    | 100.0%      | 1107ms   | 1598ms   | 2781ms   |
-| claude-sonnet-4-6         | 299/300   | 299/300     | 300/300   | 99.8%     | 100.0%      |  978ms   | 5028ms   | 9396ms   |
-| gpt-4.1 †                 | 283/300   | 273/300     | 298/300   | 94.9%     | 97.8%       | 683ms    | 1052ms   | 3860ms   |
-| gemini-2.5-flash †        | 275/300   | 268/300     | 300/300   | 93.7%     | 94.4%       |  594ms   | 1349ms   | 2104ms   |
-| nova-2-pro-preview        | 288/300   | 278/300     | 289/300   | 92.7%     | 93.3%       |  686ms   |  750ms   | 1459ms   |
-| gpt-5-mini                | 271/300   | 272/300     | 289/300   | 92.4%     | 95.6%       | 6339ms   | 17845ms  | 27028ms  |
-| gpt-4o-mini               | 271/300   | 262/300     | 293/300   | 91.8%     | 92.2%       |  760ms   | 1322ms   | 3256ms   |
-| gpt-4o                    | 278/300   | 249/300     | 294/300   | 91.2%     | 95.6%       |  625ms   | 1222ms   | 13378ms  |
-| nemotron-3-nano-30b-a3b * | 282/300   | 280/300     | 293/300   | 91.0%     | 93.3%       |  171ms   |  199ms   |  255ms   |
-| gpt-oss-120b (groq)       | 272/300   | 270/300     | 298/300   | 89.3%     | 90.0%       |   98ms   |  226ms   | 2117ms   |
-| gpt-5.2                   | 224/300   | 228/300     | 250/300   | 78.0%     | 92.2%       |  819ms   | 1483ms   | 1825ms   |
-| claude-haiku-4-5          | 221/300   | 172/300     | 299/300   | 76.9%     | 75.6%       |  732ms   | 1334ms   | 4654ms   |
+| Model | Pass Rate | Turn Pass | Tool Use | Instruction | KB Ground | TTFT Med | TTFT P95 | TTFT Max |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| claude-sonnet-4-6 | 100.0% | 300/300 | 300/300 | 300/300 | 300/300 | 850ms | 4126ms | 9396ms |
+| gemini-3-flash-preview | 100.0% | 300/300 | 300/300 | 300/300 | 300/300 | 1107ms | 1599ms | 2781ms |
+| claude-haiku-4-5 | 98.0% | 294/300 | 298/300 | 294/300 | 300/300 | 637ms | 1615ms | 3152ms |
+| gpt-5.1 | 98.0% | 294/300 | 294/300 | 294/300 | 300/300 | 739ms | 1492ms | 4244ms |
+| gpt-4.1 | 96.3% | 289/300 | 289/300 | 290/300 | 300/300 | 536ms | 1771ms | 5056ms |
+| gpt-4o | 94.7% | 284/300 | 291/300 | 285/300 | 299/300 | 546ms | 1369ms | 4897ms |
+| nemotron-3-nano-30b | 92.3% | 277/300 | 287/300 | 281/300 | 295/300 | 745ms | 920ms | 6679ms |
+| gemini-2.5-flash | 89.7% | 269/300 | 274/300 | 269/300 | 300/300 | 597ms | 1137ms | 2313ms |
+| gpt-5.2 | 89.3% | 268/300 | 270/300 | 268/300 | 298/300 | 624ms | 1171ms | 2509ms |
+| gpt-oss-120b (groq) | 86.3% | 259/300 | 272/300 | 261/300 | 298/300 | 98ms | 217ms | 2117ms |
+| gpt-5-mini | 83.7% | 251/300 | 258/300 | 251/300 | 297/300 | 682ms | 1132ms | 1904ms |
+| gpt-4o-mini | 82.7% | 248/300 | 269/300 | 259/300 | 293/300 | 553ms | 1947ms | 6497ms |
 
+Each conversation in this benchmark is 30 turns. The scores above are aggregated across 10 runs for each model. **Turn Pass** is the number of turns where all three judged dimensions pass on the same turn (`tool_use_correct && instruction_following && kb_grounding`). **Pass Rate** is `Turn Pass / total_turns`.
 
-> - [ † ] - gpt-4.1 and gemini-2.5-flash are used for most production voice agents because they currently offer the best balance of overall intelligence and low TTFB.
-> - [ * ] - Nemotron 3 Nano running in-cluster on NVIDIA Blackwell hardware
-
-Each conversation in this benchmark is 30 turns. The scores above are aggregated across 10 runs for each model. **Pass Rate** means the percentage of total turns across all runs that the judge model scored as successful. Each run is also scored independently. **Median Rate** is the median individual run pass rate. Think of pass rate as the model's average performance, and the median rate as a way to measure the model's consistency. See gpt-5.2, for example, which has a pass rate of 78.0% but a median rate of 92.2%, indicating that while it performs well on average, it can have very poor runs that drag down the median conversation score.
-
-TTFB is the number reported by the Pipecat service for each model. It is the time from the request to generate inference to the first byte of the response. An optimized speech-to-speech pipeline with typical network latencies should be able to achieve a total voice-to-voice latency of approximately LLM TTFB + 500ms. In general, a model with a TTFB above ~700ms is too slow for most voice agent use cases.
+TTFT is the latency reported by the Pipecat service for each model from request to first token/byte of model output. An optimized speech-to-speech pipeline with typical network latencies should be able to achieve a total voice-to-voice latency of approximately LLM TTFT + 500ms. In general, a model with TTFT above ~700ms is too slow for most voice agent use cases.
 
 Speech-to-speech models:
 

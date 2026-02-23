@@ -76,6 +76,7 @@ def get_run_data(run_dir: Path) -> dict | None:
         return None
 
     scores = defaultdict(lambda: {"correct": 0, "total": 0})
+    turn_pass = {"correct": 0, "total": 0}
 
     with open(judged_file) as f:
         for line in f:
@@ -83,11 +84,20 @@ def get_run_data(run_dir: Path) -> dict | None:
                 data = json.loads(line)
                 if "scores" not in data or not isinstance(data["scores"], dict):
                     continue
-                for key, value in data["scores"].items():
+                per_turn_scores = data["scores"]
+                for key, value in per_turn_scores.items():
                     if isinstance(value, bool):
                         scores[key]["total"] += 1
                         if value:
                             scores[key]["correct"] += 1
+
+                tu = per_turn_scores.get("tool_use_correct")
+                ifu = per_turn_scores.get("instruction_following")
+                kb = per_turn_scores.get("kb_grounding")
+                if isinstance(tu, bool) and isinstance(ifu, bool) and isinstance(kb, bool):
+                    turn_pass["total"] += 1
+                    if tu and ifu and kb:
+                        turn_pass["correct"] += 1
             except json.JSONDecodeError:
                 continue
 
@@ -130,6 +140,7 @@ def get_run_data(run_dir: Path) -> dict | None:
 
     return {
         "scores": dict(scores),
+        "turn_pass": turn_pass,
         "non_tool_v2vs": non_tool_v2vs,
         "tool_v2vs": tool_v2vs,
         "silence_pads": silence_pads,
@@ -154,6 +165,8 @@ def aggregate_runs(runs: list[Path]) -> dict:
         for key, val in data["scores"].items():
             all_scores[key]["correct"] += val["correct"]
             all_scores[key]["total"] += val["total"]
+        all_scores["turn_pass"]["correct"] += data["turn_pass"]["correct"]
+        all_scores["turn_pass"]["total"] += data["turn_pass"]["total"]
 
         all_non_tool_v2vs.extend(data["non_tool_v2vs"])
         all_tool_v2vs.extend(data["tool_v2vs"])
@@ -189,9 +202,13 @@ def format_ms(values: list, stat: str = "median") -> str:
 
 
 def calculate_pass_rate(scores: dict, total_turns: int) -> float:
-    """Calculate pass rate as minimum of all categories."""
+    """Calculate strict pass rate: all three quality dimensions true on a turn."""
     if total_turns == 0:
         return 0.0
+    turn_pass = scores.get("turn_pass", {})
+    tp_total = turn_pass.get("total", 0)
+    if tp_total > 0:
+        return turn_pass.get("correct", 0) / tp_total * 100
     tu = scores.get("tool_use_correct", {}).get("correct", 0)
     ifu = scores.get("instruction_following", {}).get("correct", 0)
     kb = scores.get("kb_grounding", {}).get("correct", 0)
