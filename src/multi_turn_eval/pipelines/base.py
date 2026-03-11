@@ -161,11 +161,13 @@ class BasePipeline(ABC):
         """Normalize missing tool-call IDs for OpenAI-compatible services.
 
         Some custom OpenAI-compatible endpoints can emit tool calls/results
-        with null IDs. The official OpenAI client validates these IDs as
-        required strings when re-sending context on the next turn.
+        with null IDs, or emit empty assistant text stubs immediately before
+        a tool-call message. The official OpenAI client validates these IDs as
+        required strings when re-sending context on the next turn, and some
+        backends reject empty assistant content outright.
         """
         service_name = (self.service_name or "").lower()
-        if service_name not in {"openai", "openrouter", "nemotron"}:
+        if service_name not in {"openai", "openrouter", "nemotron", "modal"}:
             return
         if self.context is None:
             return
@@ -176,14 +178,31 @@ class BasePipeline(ABC):
 
         pending_tool_call_ids: deque[str] = deque()
         patched = 0
+        dropped_empty_assistant = 0
+        drop_indexes: list[int] = []
 
-        for msg in messages:
+        for idx, msg in enumerate(messages):
             if not isinstance(msg, dict):
                 continue
             role = msg.get("role")
 
             if role == "assistant":
                 tool_calls = msg.get("tool_calls")
+                content = msg.get("content")
+                has_tool_calls = isinstance(tool_calls, list) and len(tool_calls) > 0
+                content_empty = (
+                    content is None
+                    or (isinstance(content, str) and not content.strip())
+                    or (isinstance(content, list) and len(content) == 0)
+                )
+
+                # Some OpenAI-compatible backends emit a blank assistant text
+                # message followed by a proper assistant tool_calls message.
+                if content_empty and not has_tool_calls:
+                    drop_indexes.append(idx)
+                    dropped_empty_assistant += 1
+                    continue
+
                 if not isinstance(tool_calls, list):
                     continue
                 for tool_call in tool_calls:
@@ -213,9 +232,18 @@ class BasePipeline(ABC):
                 elif tool_call_id in pending_tool_call_ids:
                     pending_tool_call_ids.remove(tool_call_id)
 
+        for idx in reversed(drop_indexes):
+            del messages[idx]
+
         if patched:
             logger.warning(
                 f"Patched {patched} missing OpenAI tool-call IDs in context"
+            )
+        if dropped_empty_assistant:
+            logger.warning(
+                "Dropped {} empty assistant message(s) from OpenAI-compatible context".format(
+                    dropped_empty_assistant
+                )
             )
 
     def _create_llm(
@@ -250,6 +278,30 @@ class BasePipeline(ABC):
             kwargs["api_key"] = api_key
             kwargs["base_url"] = "https://openrouter.ai/api/v1"
             logger.info(f"Using OpenRouter with base_url={kwargs['base_url']}")
+            return service_class(**kwargs)
+
+        # Handle Modal (uses OpenAI-compatible API with custom endpoint)
+        if service_name_lower == "modal":
+            api_key = os.getenv("MODAL_API_KEY")
+            if not api_key:
+                raise EnvironmentError("MODAL_API_KEY environment variable is required")
+            base_url = os.getenv("MODAL_BASE_URL", "https://api.us-west-2.modal.direct/v1")
+            kwargs["api_key"] = api_key
+            kwargs["base_url"] = base_url
+
+            # Disable reasoning by default (instruct mode); override with
+            # MTE_MODAL_THINKING=1 to re-enable thinking mode.
+            from pipecat.services.openai.llm import OpenAILLMService
+            enable_thinking = _env_bool("MTE_MODAL_THINKING", False)
+            extra: Dict[str, Any] = {}
+            if not enable_thinking:
+                extra["extra_body"] = {
+                    "chat_template_kwargs": {"enable_thinking": False}
+                }
+            kwargs["params"] = OpenAILLMService.InputParams(extra=extra)
+            logger.info(
+                f"Using Modal with base_url={base_url}, thinking={enable_thinking}"
+            )
             return service_class(**kwargs)
 
         if "Anthropic" in class_name:
@@ -347,19 +399,51 @@ class BasePipeline(ABC):
                 raise EnvironmentError("GOOGLE_API_KEY environment variable is required")
             kwargs["api_key"] = api_key
 
-            # Configure gemini-3 series models: use minimal thinking
+            # Configure Gemini 3 series models with an explicit thinking mode
+            # so benchmark sweeps can compare disabled vs minimal reasoning.
             if "gemini-3" in model_lower:
-                from google.genai import types
                 from pipecat.services.google.llm import GoogleLLMService
-                kwargs["params"] = GoogleLLMService.InputParams(
-                    extra={
-                        "thinking_config": types.ThinkingConfig(
-                            thinking_level="MINIMAL",
+                thinking_mode = os.getenv("MTE_GOOGLE_THINKING_MODE", "minimal").strip().lower()
+
+                if thinking_mode in {"disabled", "disable", "off", "none", "budget0", "0"}:
+                    kwargs["params"] = GoogleLLMService.InputParams(
+                        thinking=GoogleLLMService.ThinkingConfig(
+                            thinking_budget=0,
+                        )
+                    )
+                    logger.info(
+                        f"Configured {model} with thinking_budget=0 (disabled)"
+                    )
+                elif thinking_mode in {"minimal", "min"}:
+                    kwargs["params"] = GoogleLLMService.InputParams(
+                        thinking=GoogleLLMService.ThinkingConfig(
+                            thinking_level="minimal",
                             include_thoughts=True,
                         )
-                    }
-                )
-                logger.info(f"Configured {model} with thinking_level=MINIMAL")
+                    )
+                    logger.info(
+                        f"Configured {model} with thinking_level=minimal"
+                    )
+                elif thinking_mode in {"low", "medium", "high"}:
+                    kwargs["params"] = GoogleLLMService.InputParams(
+                        thinking=GoogleLLMService.ThinkingConfig(
+                            thinking_level=thinking_mode,
+                            include_thoughts=True,
+                        )
+                    )
+                    logger.info(
+                        f"Configured {model} with thinking_level={thinking_mode}"
+                    )
+                elif thinking_mode in {"default", "auto"}:
+                    logger.info(
+                        f"Configured {model} with provider default thinking behavior"
+                    )
+                else:
+                    raise ValueError(
+                        "Unsupported MTE_GOOGLE_THINKING_MODE={!r}; expected disabled, minimal, low, medium, high, or default".format(
+                            thinking_mode
+                        )
+                    )
 
         elif "Bedrock" in class_name:
             # AWS Bedrock uses AWS credentials from environment

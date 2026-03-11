@@ -32,6 +32,7 @@ SERVICE_ALIASES = {
     "openai": "pipecat.services.openai.llm.OpenAILLMService",
     "openai-realtime": "pipecat.services.openai.realtime.llm.OpenAIRealtimeLLMService",
     "openrouter": "pipecat.services.openai.llm.OpenAILLMService",  # OpenRouter uses OpenAI-compatible API
+    "modal": "pipecat.services.openai.llm.OpenAILLMService",  # Modal uses OpenAI-compatible API
     "nemotron": "multi_turn_eval.services.nemotron.NemotronLLMService",
     "anthropic": "multi_turn_eval.services.anthropic_logged.LoggedAnthropicLLMService",
     "google": "pipecat.services.google.llm.GoogleLLMService",

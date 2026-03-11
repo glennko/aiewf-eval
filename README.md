@@ -15,23 +15,37 @@ Text mode models:
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | claude-sonnet-4-6 | 100.0% | 300/300 | 300/300 | 300/300 | 300/300 | 850ms | 4126ms | 9396ms |
 | gemini-3-flash-preview | 100.0% | 300/300 | 300/300 | 300/300 | 300/300 | 1107ms | 1599ms | 2781ms |
-| claude-haiku-4-5 | 98.0% | 294/300 | 298/300 | 294/300 | 300/300 | 637ms | 1615ms | 3152ms |
+| glm-5 | 99.7% | 299/300 | 299/300 | 299/300 | 300/300 | 840ms | 865ms | 2015ms |
+| qwen3.5-27b (thinking) | 99.0% | 297/300 | 298/300 | 298/300 | 299/300 | 1443ms | 1666ms | 2199ms |
+| glm-5 (thinking) | 98.7% | 296/300 | 297/300 | 298/300 | 299/300 | 841ms | 873ms | 6712ms |
+| **claude-haiku-4-5** | **98.0%** | **294/300** | **298/300** | **294/300** | **300/300** | **637ms** | **1615ms** | **3152ms** |
 | gpt-5.1 | 98.0% | 294/300 | 294/300 | 294/300 | 300/300 | 739ms | 1492ms | 4244ms |
 | gpt-5.4 (low) | 97.0% | 291/300 | 291/300 | 291/300 | 300/300 | 782ms | 1706ms | 2698ms |
-| gpt-4.1 | 96.3% | 289/300 | 289/300 | 290/300 | 300/300 | 536ms | 1771ms | 5056ms |
-| gpt-4o | 94.7% | 284/300 | 291/300 | 285/300 | 299/300 | 546ms | 1369ms | 4897ms |
-| gpt-5.4 (none) | 93.0% | 279/300 | 280/300 | 280/300 | 299/300 | 646ms | 971ms | 4429ms |
-| nemotron-3-nano-30b (512) | 90.6% | 252/278 | 264/278 | 261/278 | 267/278 |940 | 1912ms | 2821ms |
-| nova-2-pro-preview | 90.3% | 271/300 | 280/300 | 278/300 | 293/300 | 690ms | 1616ms | 3840ms |
-| gemini-2.5-flash | 89.7% | 269/300 | 274/300 | 269/300 | 300/300 | 597ms | 1137ms | 2313ms |
-| gpt-5.2 | 89.3% | 268/300 | 270/300 | 268/300 | 298/300 | 624ms | 1171ms | 2509ms |
-| gpt-oss-120b (groq) | 86.3% | 259/300 | 272/300 | 261/300 | 298/300 | 98ms | 217ms | 2117ms |
-| gpt-5-mini | 83.7% | 251/300 | 258/300 | 251/300 | 297/300 | 682ms | 1132ms | 1904ms |
-| gpt-4o-mini | 82.7% | 248/300 | 269/300 | 259/300 | 293/300 | 553ms | 1947ms | 6497ms |
+| **nemotron-3-super-120b (512)** | **97.0%** | **291/300** | **297/300** | **291/300** | **299/300** | **687ms** | **1210ms** | **2254ms** |
+| gemini-3.1-flash-lite-preview | 96.7% | 290/300 | 295/300 | 291/300 | 299/300 | 1016ms | 1515ms | 3405ms |
+| **gpt-4.1** | **96.3%** | **289/300** | **289/300** | **290/300** | **300/300** | **536ms** | **1771ms** | **5056ms** |
+| qwen3.5-4b (thinking) | 95.0% | 285/300 | 288/300 | 288/300 | 297/300 | 778ms | 907ms | 1441ms |
+| **gpt-4o** | **94.7%** | **284/300** | **291/300** | **285/300** | **299/300** | **546ms** | **1369ms** | **4897ms** |
+| qwen3.5-27b | 94.3% | 283/300 | 283/300 | 283/300 | 300/300 | 1494ms | 1666ms | 75111ms |
+| qwen3.5-9b (thinking) | 94.2% | 226/240 | 228/240 | 228/240 | 238/240 | 897ms | 1006ms | 1356ms |
+| **gpt-5.4 ** | **93.0%** | **279/300** | **280/300** | **280/300** | **299/300** | **646ms** | **971ms** | **4429ms** |
+| nemotron-3-nano-30b (512) | 90.6% | 252/278 | 264/278 | 261/278 | 267/278 | 940ms | 1912ms | 2821ms |
+| **nova-2-pro-preview** | **90.3%** | **271/300** | **280/300** | **278/300** | **293/300** | **690ms** | **1616ms** | **3840ms** |
+| **gemini-2.5-flash** | **89.7%** | **269/300** | **274/300** | **269/300** | **300/300** | **597ms** | **1137ms** | **2313ms** |
+| qwen3.5-9b | 89.3% | 268/300 | 276/300 | 271/300 | 297/300 | 908ms | 1007ms | 24304ms |
+| **gpt-5.2** | **89.3%** | **268/300** | **270/300** | **268/300** | **298/300** | **624ms** | **1171ms** | **2509ms** |
+| qwen3.5-4b | 88.7% | 266/300 | 269/300 | 267/300 | 298/300 | 773ms | 921ms | 50986ms |
+| **gpt-oss-120b (groq)** | **86.3%** | **259/300** | **272/300** | **261/300** | **298/300** | **98ms** | **217ms** | **2117ms** |
+| gpt-4.1-mini | 85.3% | 244/286 | 244/286 | 244/286 | 286/286 | 851ms | 2189ms | 5945ms |
+| glm-4.7-flash | 84.7% | 254/300 | 268/300 | 265/300 | 288/300 | 940ms | 1079ms | 2524ms |
+| **gpt-5-mini** | **83.7%** | **251/300** | **258/300** | **251/300** | **297/300** | **682ms** | **1132ms** | **1904ms** |
+| **gpt-4o-mini** | **82.7%** | **248/300** | **269/300** | **259/300** | **293/300** | **553ms** | **1947ms** | **6497ms** |
 
-Each conversation in this benchmark is 30 turns. The scores above are aggregated across 10 runs for each model. **Turn Pass** is the number of turns where all three judged dimensions pass on the same turn (`tool_use_correct && instruction_following && kb_grounding`). **Pass Rate** is `Turn Pass / total_turns`.
+Each conversation in this benchmark is 30 turns. The scores above are aggregated across 10 runs for each model unless otherwise noted. **Turn Pass** is the number of turns where all three judged dimensions pass on the same turn (`tool_use_correct && instruction_following && kb_grounding`). **Pass Rate** is `Turn Pass / total_turns`.
 
 TTFT is the latency reported by the Pipecat service for each model from request to first token/byte of model output. An optimized speech-to-speech pipeline with typical network latencies should be able to achieve a total voice-to-voice latency of approximately LLM TTFT + 500ms. In general, a model with TTFT above ~700ms is too slow for most voice agent use cases.
+
+Models labeled "(thinking)" or "(512)" were run with reasoning/chain-of-thought, or thinking token budgets enabled. 
 
 Speech-to-speech models:
 
