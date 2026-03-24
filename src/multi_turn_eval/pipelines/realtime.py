@@ -1,9 +1,10 @@
-"""Realtime pipeline for OpenAI Realtime and Gemini Live models.
+"""Realtime pipeline for OpenAI Realtime, Gemini Live, and Zerohop models.
 
 This pipeline works with speech-to-speech models that use audio input/output:
 - OpenAI Realtime (gpt-realtime)
 - Gemini Live (gemini-*-native-audio-*)
 - Ultravox (ultravox-v0.7)
+- Zerohop voice-core (OpenAI Realtime protocol with custom base_url)
 
 Pipeline:
     paced_input → context_aggregator.user() → transcript.user() →
@@ -492,6 +493,16 @@ class RealtimePipeline(BasePipeline):
         m = self.model_name.lower()
         return "ultravox" in m
 
+    def _is_zerohop(self) -> bool:
+        """Check if current service targets a zerohop voice-core server."""
+        sn = (self.service_name or "").lower()
+        if sn == "zerohop":
+            return True
+        if not self.model_name:
+            return False
+        m = self.model_name.lower()
+        return "voice-core" in m or "zerohop" in m
+
     def _is_grok_realtime(self) -> bool:
         """Check if current model is Grok/xAI Realtime."""
         if not self.model_name:
@@ -555,7 +566,24 @@ class RealtimePipeline(BasePipeline):
         system_instruction = getattr(self.benchmark, "system_instruction", "")
         tools = getattr(self.benchmark, "tools_schema", None)
 
-        if "OpenAIRealtime" in class_name:
+        if self._is_zerohop():
+            # Zerohop voice-core: OpenAI Realtime protocol with custom base_url
+            base_url = os.getenv("ZEROHOP_WS_URL", "ws://127.0.0.1:8765/v1/realtime")
+            api_key = os.getenv("ZEROHOP_API_KEY", "not-needed")
+
+            session_props = rt_events.SessionProperties(
+                instructions=system_instruction,
+                tools=tools,
+            )
+            logger.info(f"[Zerohop] Connecting to {base_url}")
+            return service_class(
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                system_instruction=system_instruction,
+                session_properties=session_props,
+            )
+        elif "OpenAIRealtime" in class_name:
             # OpenAI Realtime: Configure server-side VAD to prevent interruptions
             api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
@@ -640,10 +668,10 @@ class RealtimePipeline(BasePipeline):
         messages = [{"role": "system", "content": system_instruction}]
 
         # Add initial greeting trigger for models that need it:
-        # - OpenAI Realtime and Grok Realtime: need user message + LLMRunFrame
+        # - OpenAI Realtime, Zerohop, and Grok Realtime: need user message + LLMRunFrame
         # - Gemini Live: needs user message with inference_on_context_initialization=True
         # - Ultravox: auto-greets, no trigger needed
-        if self._is_openai_realtime() or self._is_grok_realtime() or self._is_gemini_live():
+        if self._is_openai_realtime() or self._is_zerohop() or self._is_grok_realtime() or self._is_gemini_live():
             messages.append({"role": "user", "content": "Greet the user briefly."})
 
         self.context = LLMContext(messages, tools=tools)
@@ -1029,10 +1057,10 @@ class RealtimePipeline(BasePipeline):
 
         # Trigger initial greeting for models that need explicit ResponseCreateEvent.
         # - Ultravox: auto-greets when websocket connects (no trigger needed)
-        # - OpenAI/Grok Realtime: need LLMRunFrame to trigger _create_response()
+        # - OpenAI/Grok/Zerohop Realtime: need LLMRunFrame to trigger _create_response()
         # - Gemini Live: auto-greets via inference_on_context_initialization=True (no trigger needed)
-        if self._is_openai_realtime() or self._is_grok_realtime():
-            logger.info("[Pipeline] Triggering initial greeting via LLMRunFrame for OpenAI/Grok Realtime")
+        if self._is_openai_realtime() or self._is_zerohop() or self._is_grok_realtime():
+            logger.info("[Pipeline] Triggering initial greeting via LLMRunFrame for OpenAI/Grok/Zerohop Realtime")
             await self.task.queue_frames([LLMRunFrame()])
 
         # Wait for initial greeting to complete before playing user audio

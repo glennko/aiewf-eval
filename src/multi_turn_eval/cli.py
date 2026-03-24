@@ -41,6 +41,7 @@ SERVICE_ALIASES = {
     "groq": "pipecat.services.groq.llm.GroqLLMService",
     "cerebras": "pipecat.services.cerebras.llm.CerebrasLLMService",
     "ultravox-realtime": "pipecat.services.ultravox.llm.UltravoxRealtimeLLMService",
+    "zerohop": "pipecat.services.openai.realtime.llm.OpenAIRealtimeLLMService",
 }
 
 
@@ -53,6 +54,7 @@ PIPELINE_CLASSES = {
     "realtime": "multi_turn_eval.pipelines.realtime.RealtimePipeline",
     "grok-realtime": "multi_turn_eval.pipelines.grok_realtime.GrokRealtimePipeline",
     "nova-sonic": "multi_turn_eval.pipelines.nova_sonic.NovaSonicPipeline",
+    "zerohop-realtime": "multi_turn_eval.pipelines.realtime.RealtimePipeline",
 }
 
 
@@ -107,6 +109,9 @@ def get_pipeline_class(pipeline_type: str) -> type:
 def infer_pipeline(model: str) -> str:
     """Infer default pipeline from model name pattern."""
     m = model.lower()
+    # Zerohop voice-core uses the OpenAI Realtime protocol
+    if "voice-core" in m or "zerohop" in m:
+        return "zerohop-realtime"
     # Grok realtime uses dedicated pipeline for xAI-specific protocol handling
     if m.startswith("grok") and "realtime" in m:
         return "grok-realtime"
