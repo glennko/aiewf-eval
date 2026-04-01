@@ -571,9 +571,24 @@ class RealtimePipeline(BasePipeline):
             base_url = os.getenv("ZEROHOP_WS_URL", "ws://127.0.0.1:8765/v1/realtime")
             api_key = os.getenv("ZEROHOP_API_KEY", "not-needed")
 
+            # Configure server-side VAD to reduce false interruptions during
+            # benchmark playback.  Zerohop uses TenVad internally; these
+            # parameters are forwarded via session.update.
+            audio_config = rt_events.AudioConfiguration(
+                input=rt_events.AudioInput(
+                    turn_detection=rt_events.TurnDetection(
+                        type="server_vad",
+                        threshold=0.7,           # Less sensitive to background noise
+                        prefix_padding_ms=500,   # Padding before detected speech
+                        silence_duration_ms=800,  # Wait longer before ending turn
+                    )
+                )
+            )
+
             session_props = rt_events.SessionProperties(
                 instructions=system_instruction,
                 tools=tools,
+                audio=audio_config,
             )
             logger.info(f"[Zerohop] Connecting to {base_url}")
             return service_class(
